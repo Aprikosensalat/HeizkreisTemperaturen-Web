@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Heizkreis Temperaturen</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Heizkreis</h1>
+      <button id="connect" type="button">Verbinden</button>
+    </header>
+
+    <p id="message" class="message" hidden></p>
+    <p id="connection" class="muted">Nicht verbunden</p>
+
+    <section id="sensors" class="values" aria-label="Aktuelle Temperaturen"></section>
+
+    <section class="panel">
+      <h2>Verlauf</h2>
+      <div class="controls">
+        <label>
+          Zeitraum
+          <select id="range">
+            <option value="day" selected>Tag aus Kalender</option>
+            <option value="1">Letzte 24 h</option>
+            <option value="7">Letzte 7 Tage</option>
+            <option value="30">Letzte 30 Tage</option>
+            <option value="0">Alles</option>
+          </select>
+        </label>
+        <label>
+          Ansicht
+          <select id="view">
+            <option value="combined">Ein Diagramm</option>
+            <option value="single">Je Sensor</option>
+          </select>
+        </label>
+        <button id="refresh" type="button" disabled>Aktualisieren</button>
+        <button id="download" type="button" disabled>CSV herunterladen</button>
+      </div>
+      <div id="calendar" class="calendar" hidden>
+        <div class="calendar-head">
+          <button id="calPrev" type="button" class="secondary" aria-label="Voriger Monat">‹</button>
+          <span id="calTitle"></span>
+          <button id="calNext" type="button" class="secondary" aria-label="Nächster Monat">›</button>
+        </div>
+        <div id="calGrid" class="calendar-grid"></div>
+        <div class="controls calendar-days">
+          <button id="dayPrev" type="button" class="secondary">‹ Vortag</button>
+          <button id="dayToday" type="button" class="secondary">Heute</button>
+          <button id="dayNext" type="button" class="secondary">Folgetag ›</button>
+        </div>
+      </div>
+      <progress id="progress" max="1" value="0" hidden></progress>
+      <p id="history" class="muted">Noch keine Daten geladen</p>
+      <div id="combined">
+        <div class="chart"><canvas id="chart"></canvas></div>
+        <div id="legend" class="legend"></div>
+        <p id="tooltip" class="tooltip"></p>
+      </div>
+      <div id="chartList" class="chart-list" hidden></div>
+    </section>
+
+    <section class="panel">
+      <h2>Einstellungen</h2>
+      <div class="controls">
+        <label>
+          Messintervall
+          <select id="interval" disabled>
+            <option value="10">10 s</option>
+            <option value="30">30 s</option>
+            <option value="60">1 min</option>
+            <option value="120">2 min</option>
+            <option value="300">5 min</option>
+            <option value="600">10 min</option>
+            <option value="900">15 min</option>
+            <option value="1800">30 min</option>
+            <option value="3600">1 h</option>
+          </select>
+        </label>
+        <button id="measure" type="button" disabled>Jetzt messen</button>
+        <button id="scan" type="button" disabled>Sensoren suchen</button>
+      </div>
+      <p id="storage" class="muted">Speicher: –</p>
+      <p class="muted">Der ESP32 misst und loggt immer, auch ohne Verbindung. Ist der Speicher
+        voll, werden die ältesten Daten überschrieben.</p>
+      <div class="controls spaced">
+        <button id="clear" type="button" class="danger" disabled>Log löschen</button>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
