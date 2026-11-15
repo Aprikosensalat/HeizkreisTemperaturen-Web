@@ -61,9 +61,13 @@ müssen zu denen in `src/main.cpp` der Firmware passen.
   und er lässt sich mit "Vergessen" entfernen.
 - **Umbenennen:** Wie im Templogger direkt in der Kachel: Name eintragen, dann
   "Speichern" oder Enter. Bis zu 24 Bytes, Umlaute zählen doppelt. Der Name steht im ESP32.
-- **Verlauf:** Umschaltbar zwischen einem gemeinsamen Diagramm und einem Diagramm je
-  Sensor mit eigener Temperaturachse. Alle Diagramme haben dieselbe Zeitachse. Die Wahl
-  merkt sich der Browser. Beim Antippen oder Überfahren zeigt ein Fadenkreuz in allen
+- **Diagramme:** Beliebig viele, jedes mit eigener Temperaturachse und eigenen Sensoren.
+  "Diagramm hinzufügen" öffnet eine Auswahl mit Titel, Sensoren zum Ankreuzen, "Alle
+  Sensoren, auch später gefundene" und "Für jeden gewählten Sensor ein eigenes Diagramm".
+  Jedes Diagramm hat "Sensoren" zum Ändern der Auswahl und "Entfernen". Antippen eines
+  Sensors in der Legende blendet ihn in diesem Diagramm aus und wieder ein. Voreingestellt
+  ist ein Diagramm mit allen Sensoren.
+- **Verlauf:** Alle Diagramme haben dieselbe Zeitachse. Beim Antippen oder Überfahren zeigt ein Fadenkreuz in allen
   Diagrammen Zeit und Werte. Lücken (Stromausfall, fehlender Sensor) werden nicht
   verbunden. Das Log wird jede Minute nachgeladen, und zwar nur die neuen Datensätze.
 - **Kalender (Standard):** Zeitraum "Tag aus Kalender". Ein Monatskalender, darunter
@@ -94,6 +98,25 @@ müssen zu denen in `src/main.cpp` der Firmware passen.
 - **Einstellungen:** Messintervall, sofort messen, Sensoren suchen, Log löschen
 - **Speicheranzeige:** Anzahl Datensätze, Kapazität und wie viele Tage sie beim
   aktuellen Intervall reicht
+- **Gespeicherte Einstellungen:** Diagramme samt ausgeblendeten Sensoren, Zeitraum,
+  Ausschnitt, Reiter und die Sensornamen stehen im `localStorage` des Browsers und gelten
+  in der nächsten Sitzung weiter.
+- **Daten im Browser:** Jeder vom ESP32 geladene Datensatz mit Uhrzeit wird in IndexedDB
+  gespeichert (Schlüssel ist die Unix-Zeit, Temperaturen in 1/100 Grad). Ohne Verbindung,
+  auch nach einem Abbruch oder in einer neuen Sitzung, zeigen Kalender, Zeiträume,
+  Diagramme und CSV-Export diese Daten, gekennzeichnet mit "aus dem Browser-Speicher". Im
+  Kalender haben Tage mit gespeicherten Daten einen Punkt. Unter Einstellungen stehen
+  Anzahl und Zeitraum, "Lokale Daten löschen" leert den Speicher.
+- **Alles vom ESP32 in den Browser laden:** Holt das ganze Log vom ältesten bis zum
+  neuesten Datensatz in den Browser, damit auch Tage ohne Verbindung abrufbar sind, die
+  man vorher nie angesehen hat. Mit Fortschrittsbalken und geschätzter Restzeit, der
+  Button wird währenddessen zu "Abbrechen". Bereits gespeicherte Datensätze werden
+  überschrieben, nicht doppelt gespeichert. Datensätze ohne Uhrzeit werden übersprungen.
+  Bei 120.832 Datensätzen dauert das je nach MTU etwa 4 bis 10 Minuten. Bricht die
+  Verbindung ab, bleibt alles bis dahin Geladene gespeichert, ein neuer Start lädt
+  wieder von vorne. "Log löschen" auf
+  dem ESP32 lässt die Daten im Browser stehen. Die Seite bittet den Browser, die Daten
+  dauerhaft zu behalten.
 - **CSV-Export:** Die Datei `heizkreis_<Datum>_<Uhrzeit>.csv` enthält die geladenen Daten.
 
 ## CSV-Format
@@ -116,8 +139,11 @@ Zeit des Browsers. Bei Datensätzen ohne bekannte Uhrzeit bleiben Datum und Uhrz
   unterstützt Web Bluetooth nicht.
 - Das Repo ist öffentlich, weil GitHub Pages im kostenlosen Plan nur für öffentliche
   Repos geht. Die Firmware liegt in einem privaten Repo.
-- Die geladenen Logdaten liegen nur im Speicher der Seite. Beim Neuladen oder neuen
-  Verbinden werden sie erneut vom ESP32 geholt.
+- Die Daten im Browser gelten nur für diesen Browser auf diesem Gerät. Löscht man die
+  Website-Daten im Browser, sind sie weg.
+- Mit Verbindung lädt die Seite den Zeitraum weiter vollständig vom ESP32, auch wenn er
+  schon im Browser liegt. Ältere Daten, die der ESP32 schon überschrieben hat, sind dann
+  nur ohne Verbindung zu sehen.
 - Die Verbindung hat keine Kopplung und kein Passwort.
 - Im Kalender fehlen Datensätze ohne Uhrzeit. Lücken innerhalb des Logs (zum Beispiel
   ein Stromausfall über mehrere Tage) erkennt der Kalender nicht. Solche Tage sind wählbar

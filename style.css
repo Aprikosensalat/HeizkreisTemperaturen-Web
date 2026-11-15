@@ -252,10 +252,6 @@ canvas {
   touch-action: pan-y;
 }
 
-#chart {
-  height: 280px;
-}
-
 /* Kalender fuer die Tagesauswahl */
 .calendar {
   max-width: 360px;
@@ -326,7 +322,7 @@ canvas {
 /* Je Sensor ein Diagramm */
 .chart-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   margin-top: 12px;
 }
@@ -339,23 +335,57 @@ canvas {
 }
 
 .chart-card h3 {
+  flex: 1;
   margin: 0;
   color: var(--text);
+  font-size: 0.95rem;
+  overflow-wrap: anywhere;
+}
+
+.chart-card canvas {
+  height: 240px;
+  margin-top: 8px;
+}
+
+.chart-card.single canvas {
+  height: 180px;
+}
+
+.chart-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chart-head button.small {
+  margin-top: 0;
 }
 
 .chart-card .address {
-  margin: 0 0 6px;
+  margin: 0;
 }
 
+/* Legende, Antippen blendet den Sensor aus */
 .legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
-  margin-top: 8px;
+  gap: 2px 6px;
+  margin-top: 6px;
   font-size: 0.85rem;
 }
 
-.legend span::before {
+.legend button {
+  min-height: 32px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.legend button::before {
   content: "";
   display: inline-block;
   width: 12px;
@@ -363,6 +393,102 @@ canvas {
   margin-right: 6px;
   vertical-align: middle;
   background: var(--color);
+}
+
+.legend button.off {
+  color: var(--muted);
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+/* Kalender: Tage mit Daten im Browser */
+.calendar-grid button.has-data {
+  position: relative;
+}
+
+.calendar-grid button.has-data::after {
+  content: "";
+  position: absolute;
+  bottom: 4px;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+}
+
+/* Dialog fuer die Sensorauswahl */
+.chart-dialog {
+  width: calc(100% - 32px);
+  max-width: 440px;
+  max-height: calc(100% - 32px);
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.chart-dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+.chart-dialog .field {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  font-size: 0.9rem;
+}
+
+.chart-dialog input[type="text"] {
+  min-height: 40px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.check input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.check[hidden] {
+  display: none;
+}
+
+.check-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0 12px;
+  max-height: 45vh;
+  margin: 8px 0;
+  overflow-y: auto;
+}
+
+.swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--color);
+  flex: none;
+}
+
+.dialog-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 .tooltip {

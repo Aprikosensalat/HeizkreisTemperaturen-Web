@@ -37,13 +37,7 @@
             <option value="0">Alles</option>
           </select>
         </label>
-        <label>
-          Ansicht
-          <select id="view">
-            <option value="combined">Ein Diagramm</option>
-            <option value="single">Je Sensor</option>
-          </select>
-        </label>
+        <button id="addChart" type="button" class="secondary">Diagramm hinzufügen</button>
         <button id="refresh" type="button" disabled>Aktualisieren</button>
         <button id="download" type="button" disabled>CSV herunterladen</button>
       </div>
@@ -81,12 +75,7 @@
           <button id="panNext" type="button" class="secondary">Später ›</button>
         </div>
       </div>
-      <div id="combined">
-        <div class="chart"><canvas id="chart"></canvas></div>
-        <div id="legend" class="legend"></div>
-        <p id="tooltip" class="tooltip"></p>
-      </div>
-      <div id="chartList" class="chart-list" hidden></div>
+      <div id="chartList" class="chart-list"></div>
     </section>
 
     <section class="panel">
@@ -115,6 +104,18 @@
       <div class="controls spaced">
         <button id="clear" type="button" class="danger" disabled>Log löschen</button>
       </div>
+      <h3>Daten im Browser</h3>
+      <p id="localInfo" class="muted">Im Browser gespeichert: –</p>
+      <p class="muted">Alle geladenen Logdaten mit Uhrzeit bleiben in diesem Browser gespeichert.
+        Ohne Verbindung zeigen Kalender und Zeitraum diese Daten an. Löschen auf dem ESP32
+        löscht sie nicht. "Alles vom ESP32 laden" holt das ganze Log in den Browser, damit
+        auch ältere Tage ohne Verbindung abrufbar sind. Das volle Log dauert einige Minuten.</p>
+      <div class="controls spaced">
+        <button id="archive" type="button" disabled>Alles vom ESP32 in den Browser laden</button>
+        <button id="clearLocal" type="button" class="danger">Lokale Daten löschen</button>
+      </div>
+      <progress id="archiveProgress" max="1" value="0" hidden></progress>
+      <p id="archiveStatus" class="muted" hidden></p>
     </section>
     </div>
 
@@ -138,6 +139,33 @@
       </section>
     </div>
   </main>
+
+  <dialog id="chartDialog" class="chart-dialog">
+    <h2 id="chartDialogTitle">Diagramm hinzufügen</h2>
+    <label class="field">
+      Titel (optional)
+      <input id="chartTitle" type="text" maxlength="40">
+    </label>
+    <label class="check">
+      <input id="chartAll" type="checkbox">
+      Alle Sensoren, auch später gefundene
+    </label>
+    <div class="controls">
+      <button id="chartSelectAll" type="button" class="secondary small">Alle</button>
+      <button id="chartSelectNone" type="button" class="secondary small">Keine</button>
+    </div>
+    <div id="chartSensorList" class="check-list"></div>
+    <label id="chartSplitLabel" class="check">
+      <input id="chartSplit" type="checkbox">
+      Für jeden gewählten Sensor ein eigenes Diagramm
+    </label>
+    <p id="chartDialogError" class="message" hidden></p>
+    <div class="controls dialog-actions">
+      <button id="chartCancel" type="button" class="secondary">Abbrechen</button>
+      <button id="chartOk" type="button">Übernehmen</button>
+    </div>
+  </dialog>
+
   <script src="app.js"></script>
 </body>
 </html>

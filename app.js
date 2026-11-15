@@ -41,7 +41,13 @@ const SEGMENT_RECORDS = 2048;
 const SEGMENTS_TIMEOUT_MS = 5000;
 const SYNC_STALL_MS = 2000;
 const AUTO_REFRESH_MS = 60000;
-const VIEW_STORAGE_KEY = "heizkreis-view";
+// Einstellungen im localStorage, Logdaten in IndexedDB
+const CHARTS_STORAGE_KEY = "heizkreis-charts";
+const RANGE_STORAGE_KEY = "heizkreis-range";
+const SENSORS_STORAGE_KEY = "heizkreis-sensors";
+const DB_NAME = "heizkreis";
+const DB_STORE = "records";
+const LOCAL_SAVE_BATCH = 500;
 const TAB_STORAGE_KEY = "heizkreis-tab";
 const ZOOM_STORAGE_KEY = "heizkreis-zoom";
 const OFFSET_MAX = 20;  // Grad, wie OFFSET_MAX in der Firmware
@@ -54,16 +60,29 @@ const ui = {
   connection: el("connection"),
   sensors: el("sensors"),
   range: el("range"),
-  view: el("view"),
+  addChart: el("addChart"),
   refresh: el("refresh"),
   download: el("download"),
   progress: el("progress"),
   history: el("history"),
-  combined: el("combined"),
-  chart: el("chart"),
-  legend: el("legend"),
-  tooltip: el("tooltip"),
   chartList: el("chartList"),
+  localInfo: el("localInfo"),
+  clearLocal: el("clearLocal"),
+  archive: el("archive"),
+  archiveProgress: el("archiveProgress"),
+  archiveStatus: el("archiveStatus"),
+  chartDialog: el("chartDialog"),
+  chartDialogTitle: el("chartDialogTitle"),
+  chartTitle: el("chartTitle"),
+  chartAll: el("chartAll"),
+  chartSelectAll: el("chartSelectAll"),
+  chartSelectNone: el("chartSelectNone"),
+  chartSensorList: el("chartSensorList"),
+  chartSplit: el("chartSplit"),
+  chartSplitLabel: el("chartSplitLabel"),
+  chartDialogError: el("chartDialogError"),
+  chartCancel: el("chartCancel"),
+  chartOk: el("chartOk"),
   calendar: el("calendar"),
   calPrev: el("calPrev"),
   calNext: el("calNext"),
@@ -107,7 +126,21 @@ let resumePending = false;
 let lastSyncData = 0;
 let writeChain = Promise.resolve();
 let hoverEpoch = null;
-let singleCharts = [];          // [{slot, canvas, tooltip}] in der Ansicht "Je Sensor"
+
+// Diagramme: {title, all, slots, hidden}. all = alle Sensoren, auch spaeter gefundene.
+// hidden = in der Legende ausgeblendete Slots. Wird im Browser gespeichert.
+let charts = [{ title: "", all: true, slots: [], hidden: [] }];
+let chartViews = [];            // [{chart, canvas, tooltip}] der angezeigten Diagramme
+let dialogChartIndex = null;    // im Dialog bearbeitetes Diagramm, null = neues
+
+// Logdaten im Browser (IndexedDB)
+let recordsFromBrowser = false; // records stammen aus dem Browser, nicht vom ESP32
+let pendingLocal = [];          // noch nicht gespeicherte Datensaetze
+let localDays = new Set();      // Tage (ms, 0 Uhr) mit Daten im Browser
+let localFirstDay = null;
+let localLoadToken = 0;
+// Ganzes Log in den Browser laden: {start, next, stored, noTime, startedMs, lastData, resumePending}
+let archive = null;
 
 // Kalender: Zeitindex der Segmente und gewaehlter Tag
 let segments = [];              // [{segment, epoch}], epoch 0 = unbekannt
@@ -299,9 +332,13 @@ function onDisconnected() {
   ui.connection.textContent = "Nicht verbunden";
   ui.connect.textContent = "Verbinden";
   ui.storage.textContent = "Speicher: –";
+  if (archive) {
+    finishArchive(false, ", weil die Verbindung getrennt wurde");
+  }
+  flushLocal();
   renderSensors();
   renderCalibration();
-  updateControls();
+  renderHistory();
 }
 
 // --- Eingehende Daten ---------------------------------------------------
@@ -366,6 +403,7 @@ function onSensorPage(view) {
       name: decoder.decode(end < 0 ? nameBytes : nameBytes.slice(0, end)),
     };
   }
+  saveSensorsLocal();
   renderSensors();
   renderCalibration();
   renderHistory();
@@ -418,6 +456,10 @@ function onStatus(view) {
 }
 
 function onLogData(view) {
+  if (archive) {
+    onArchiveData(view);
+    return;
+  }
   // Nach einem Abbruch koennen noch Pakete unterwegs sein.
   if (!syncing) {
     return;
@@ -458,14 +500,21 @@ function onLogData(view) {
         continue;  // davor oder ohne Uhrzeit
       }
     }
-    records.push({
+    const record = {
       index: first + i,
       epoch,
       uptimeS: view.getUint32(offset + 4, true),
       temps: readTemps(view, offset + 8),
-    });
+    };
+    records.push(record);
+    if (epoch > 0) {
+      pendingLocal.push(record);
+    }
   }
   nextRecord = first + count;
+  if (pendingLocal.length >= LOCAL_SAVE_BATCH) {
+    flushLocal();
+  }
 
   if (reachedEnd) {
     sendCommand(CMD_DOWNLOAD_CANCEL).catch(() => {});
@@ -516,13 +565,21 @@ function fetchSegments() {
 }
 
 // Erster Tag mit Uhrzeit im Log, null = unbekannt
+// Erster Tag mit Daten auf dem ESP32 oder im Browser, null = nicht begrenzen
 function firstDataDay() {
   // Hat das aelteste Segment keine Uhrzeit, koennen spaetere Datensaetze darin
   // trotzdem eine haben. Dann den Kalender nicht nach vorne begrenzen.
-  if (segments.length === 0 || segments[0].epoch === 0) {
+  if (segments.length > 0 && segments[0].epoch === 0) {
     return null;
   }
-  return startOfDay(new Date(segments[0].epoch * 1000));
+  const days = [];
+  if (segments.length > 0) {
+    days.push(startOfDay(new Date(segments[0].epoch * 1000)));
+  }
+  if (localFirstDay) {
+    days.push(localFirstDay);
+  }
+  return days.length ? new Date(Math.min(...days)) : null;
 }
 
 // --- Log-Abgleich -------------------------------------------------------
@@ -545,11 +602,12 @@ function rangeStartIndex() {
 
 function resetRecords() {
   records = [];
+  recordsFromBrowser = false;
   nextRecord = rangeStartIndex();
 }
 
 async function startSync() {
-  if (syncing || !isConnected()) {
+  if (syncing || archive || !isConnected()) {
     return;
   }
   syncing = true;
@@ -583,6 +641,7 @@ function finishSync() {
   if (status) {
     records = records.filter((record) => record.index >= status.oldestIndex);
   }
+  flushLocal();
   updateControls();
   renderHistory();
 }
@@ -593,7 +652,146 @@ setInterval(() => {
     resumePending = false;
     requestResume();
   }
+  if (archive && Date.now() - archive.lastData > SYNC_STALL_MS) {
+    archive.lastData = Date.now();
+    archive.resumePending = false;
+    requestArchiveResume();
+  }
 }, 1000);
+
+// --- Ganzes Log in den Browser laden --------------------------------------
+
+async function startArchive() {
+  if (!isConnected() || !status || archive) {
+    return;
+  }
+  if (syncing) {
+    syncing = false;
+    ui.progress.hidden = true;
+    await sendCommand(CMD_DOWNLOAD_CANCEL);
+  }
+  archive = {
+    start: status.oldestIndex,
+    next: status.oldestIndex,
+    stored: 0,
+    noTime: 0,
+    startedMs: Date.now(),
+    lastData: Date.now(),
+    resumePending: false,
+  };
+  showMessage("");
+  updateArchiveUi();
+  updateControls();
+  await sendCommand(CMD_DOWNLOAD, archive.next);
+}
+
+function requestArchiveResume() {
+  if (!archive || archive.resumePending || !isConnected()) {
+    return;
+  }
+  archive.resumePending = true;
+  sendCommand(CMD_DOWNLOAD, archive.next).catch(() => {
+    if (archive) {
+      archive.resumePending = false;
+    }
+  });
+}
+
+// Wie onLogData, aber alles geht nur in den Browser-Speicher.
+function onArchiveData(view) {
+  const first = view.getUint32(0, true);
+  const count = Math.floor((view.byteLength - 4) / RECORD_SIZE);
+  archive.lastData = Date.now();
+
+  // Alte Daten wurden inzwischen auf dem Geraet ueberschrieben.
+  if (status && archive.next < status.oldestIndex && first >= status.oldestIndex) {
+    archive.next = first;
+  }
+  if (first !== archive.next) {
+    requestArchiveResume();
+    return;
+  }
+  archive.resumePending = false;
+
+  if (count === 0) {
+    finishArchive(true);
+    return;
+  }
+  for (let i = 0; i < count; i++) {
+    const offset = 4 + i * RECORD_SIZE;
+    const epoch = view.getUint32(offset, true);
+    if (epoch === 0) {
+      archive.noTime++;
+      continue;
+    }
+    pendingLocal.push({
+      epoch,
+      uptimeS: view.getUint32(offset + 4, true),
+      temps: readTemps(view, offset + 8),
+    });
+    archive.stored++;
+  }
+  archive.next = first + count;
+  if (pendingLocal.length >= LOCAL_SAVE_BATCH) {
+    flushLocal(false);  // Anzeige erst am Ende auffrischen, getAllKeys ist teuer
+  }
+  updateArchiveUi();
+}
+
+async function finishArchive(complete, reason = "") {
+  const done = archive;
+  archive = null;
+  await flushLocal();
+  let text = complete
+    ? `Fertig: ${done.stored.toLocaleString("de-DE")} Datensätze vom ESP32 im Browser gespeichert.`
+    : `Abgebrochen${reason}. ${done.stored.toLocaleString("de-DE")} Datensätze sind bis dahin gespeichert.`;
+  if (done.noTime > 0) {
+    text += ` ${done.noTime.toLocaleString("de-DE")} Datensätze ohne Uhrzeit wurden übersprungen.`;
+  }
+  showMessage(text);
+  updateArchiveUi();
+  updateControls();
+  // Die laufende Ansicht wurde fuer den Download unterbrochen, jetzt neu laden.
+  if (isConnected() && status) {
+    if (dayMode()) {
+      await loadDay();
+    } else {
+      resetRecords();
+      renderHistory();
+      await startSync();
+    }
+  }
+}
+
+async function cancelArchive() {
+  if (!archive) {
+    return;
+  }
+  await sendCommand(CMD_DOWNLOAD_CANCEL).catch(() => {});
+  await finishArchive(false);
+}
+
+function updateArchiveUi() {
+  ui.archive.textContent = archive ? "Abbrechen" : "Alles vom ESP32 in den Browser laden";
+  ui.archive.classList.toggle("danger", Boolean(archive));
+  ui.archiveProgress.hidden = !archive;
+  ui.archiveStatus.hidden = !archive;
+  if (!archive) {
+    return;
+  }
+  const end = status ? status.nextIndex : archive.next;
+  const total = Math.max(1, end - archive.start);
+  const done = Math.max(0, archive.next - archive.start);
+  ui.archiveProgress.max = total;
+  ui.archiveProgress.value = done;
+  let text = `${done.toLocaleString("de-DE")} von ${total.toLocaleString("de-DE")} Datensätzen geladen`;
+  const elapsed = (Date.now() - archive.startedMs) / 1000;
+  if (done > 0 && elapsed > 3) {
+    const rest = ((total - done) * elapsed) / done;
+    text += rest >= 90 ? `, noch etwa ${Math.ceil(rest / 60)} min` : `, noch etwa ${Math.ceil(rest)} s`;
+  }
+  ui.archiveStatus.textContent = text;
+}
 
 // Neue Messungen nachladen. Im Kalender nur, wenn der heutige Tag gewaehlt ist.
 setInterval(() => {
@@ -609,6 +807,11 @@ setInterval(() => {
 async function loadDay() {
   renderCalendar();
   if (!isConnected() || !status) {
+    await loadLocal();
+    return;
+  }
+  // Waehrend "Alles laden" laeuft, wird die Ansicht danach neu geladen.
+  if (archive) {
     return;
   }
   if (syncing) {
@@ -633,6 +836,7 @@ async function loadDay() {
   dayEndIndex = Math.max(dayStartIndex, endIndex);
 
   records = [];
+  recordsFromBrowser = false;
   nextRecord = dayStartIndex;
   hoverEpoch = null;
   viewEnd = null;
@@ -678,6 +882,10 @@ function renderCalendar() {
     button.type = "button";
     button.textContent = String(d);
     button.disabled = date > today || (minDay !== null && date < minDay);
+    if (localDays.has(date.getTime())) {
+      button.classList.add("has-data");
+      button.title = "Daten im Browser gespeichert";
+    }
     if (date.getTime() === selectedDay.getTime()) {
       button.classList.add("selected");
     }
@@ -703,6 +911,10 @@ function renderSensors() {
     return;
   }
   ui.sensors.replaceChildren();
+  // Ohne Verbindung gibt es keine aktuellen Werte, die Namen kommen aus dem Browser.
+  if (!isConnected()) {
+    return;
+  }
   sensors.forEach((sensor, slot) => {
     if (!sensor.used) {
       return;
@@ -1004,10 +1216,6 @@ function activeSlots() {
   return slots;
 }
 
-function singleView() {
-  return ui.view.value === "single";
-}
-
 function renderHistory() {
   renderCalendar();
   const timed = timedRecords();
@@ -1015,7 +1223,9 @@ function renderHistory() {
     ? selectedDay.toLocaleDateString("de-DE", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" }) + ": "
     : "";
   if (records.length === 0 && !isConnected()) {
-    ui.history.textContent = "Noch keine Daten geladen";
+    ui.history.textContent = localDays.size > 0
+      ? `${dayText}keine Daten im Browser gespeichert`
+      : "Noch keine Daten geladen";
   } else if (records.length === 0) {
     ui.history.textContent = dayMode() ? `${dayText}keine Messwerte` : "Keine Logdaten vorhanden";
   } else if (dayMode()) {
@@ -1032,43 +1242,419 @@ function renderHistory() {
     }
     ui.history.textContent = text;
   }
+  if (recordsFromBrowser && records.length > 0) {
+    ui.history.textContent += " (aus dem Browser-Speicher)";
+  }
 
-  const slots = activeSlots();
-  ui.combined.hidden = singleView();
-  ui.chartList.hidden = !singleView();
+  renderCharts();
+  updateControls();
+}
 
-  if (singleView()) {
-    // Je Sensor eine Karte mit eigenem Diagramm
-    ui.chartList.replaceChildren();
-    singleCharts = slots.map((slot) => {
-      const card = document.createElement("div");
-      card.className = "chart-card";
-      card.style.setProperty("--color", seriesColor(slot));
-      const title = document.createElement("h3");
-      title.textContent = `${slot + 1}. ${sensorName(slot)}`;
+// --- Diagramme ----------------------------------------------------------
+
+function chartSlots(chart) {
+  return chart.all ? activeSlots() : chart.slots;
+}
+
+function visibleSlots(chart) {
+  return chartSlots(chart).filter((slot) => !chart.hidden.includes(slot));
+}
+
+function chartTitle(chart, index) {
+  if (chart.title) {
+    return chart.title;
+  }
+  if (chart.all) {
+    return "Alle Sensoren";
+  }
+  if (chart.slots.length === 1) {
+    return `${chart.slots[0] + 1}. ${sensorName(chart.slots[0])}`;
+  }
+  return `Diagramm ${index + 1}`;
+}
+
+function saveCharts() {
+  try {
+    localStorage.setItem(CHARTS_STORAGE_KEY, JSON.stringify(charts));
+  } catch (e) {}
+}
+
+function loadCharts() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CHARTS_STORAGE_KEY));
+    if (!Array.isArray(saved)) {
+      return;
+    }
+    const validSlots = (list) => (Array.isArray(list) ? list : [])
+      .filter((slot) => Number.isInteger(slot) && slot >= 0 && slot < MAX_SENSORS);
+    charts = saved.map((chart) => ({
+      title: typeof chart.title === "string" ? chart.title : "",
+      all: Boolean(chart.all),
+      slots: validSlots(chart.slots),
+      hidden: validSlots(chart.hidden),
+    }));
+  } catch (e) {}
+}
+
+// Baut je Diagramm eine Karte mit Titel, Knoepfen, Diagramm und Legende.
+function renderCharts() {
+  ui.chartList.replaceChildren();
+  chartViews = [];
+  if (charts.length === 0) {
+    const hint = document.createElement("p");
+    hint.className = "muted";
+    hint.textContent = "Kein Diagramm. Über \"Diagramm hinzufügen\" eines anlegen.";
+    ui.chartList.append(hint);
+  }
+  charts.forEach((chart, index) => {
+    const slots = chartSlots(chart);
+    const card = document.createElement("div");
+    card.className = slots.length === 1 ? "chart-card single" : "chart-card";
+    if (slots.length === 1) {
+      card.style.setProperty("--color", seriesColor(slots[0]));
+    }
+
+    const head = document.createElement("div");
+    head.className = "chart-head";
+    const title = document.createElement("h3");
+    title.textContent = chartTitle(chart, index);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "secondary small";
+    edit.textContent = "Sensoren";
+    edit.addEventListener("click", () => openChartDialog(index));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger small";
+    remove.textContent = "Entfernen";
+    remove.addEventListener("click", () => {
+      if (confirm(`Diagramm "${chartTitle(chart, index)}" entfernen?`)) {
+        charts.splice(index, 1);
+        saveCharts();
+        renderCharts();
+      }
+    });
+    head.append(title, edit, remove);
+
+    const canvas = document.createElement("canvas");
+    addPointerHandlers(canvas);
+
+    // Legende: Antippen blendet einen Sensor in diesem Diagramm aus und wieder ein.
+    const legend = document.createElement("div");
+    legend.className = "legend";
+    if (slots.length > 1) {
+      for (const slot of slots) {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.style.setProperty("--color", seriesColor(slot));
+        item.textContent = sensorName(slot);
+        const hidden = chart.hidden.includes(slot);
+        item.classList.toggle("off", hidden);
+        item.setAttribute("aria-pressed", String(!hidden));
+        item.title = hidden ? "Einblenden" : "Ausblenden";
+        item.addEventListener("click", () => {
+          chart.hidden = hidden ? chart.hidden.filter((s) => s !== slot) : [...chart.hidden, slot];
+          saveCharts();
+          renderCharts();
+        });
+        legend.append(item);
+      }
+    } else if (slots.length === 1) {
       const address = document.createElement("span");
       address.className = "address";
-      address.textContent = sensorLocation(sensors[slot]);
-      const canvas = document.createElement("canvas");
-      const tooltip = document.createElement("p");
-      tooltip.className = "tooltip";
-      card.append(title, address, canvas, tooltip);
-      ui.chartList.append(card);
-      addPointerHandlers(canvas);
-      return { slot, canvas, tooltip };
-    });
-  } else {
-    singleCharts = [];
-    ui.legend.replaceChildren();
-    for (const slot of slots) {
-      const item = document.createElement("span");
-      item.style.setProperty("--color", seriesColor(slot));
-      item.textContent = sensorName(slot);
-      ui.legend.append(item);
+      address.textContent = sensorLocation(sensors[slots[0]], slots[0]);
+      legend.append(address);
+    }
+
+    const tooltip = document.createElement("p");
+    tooltip.className = "tooltip";
+    card.append(head, canvas, legend, tooltip);
+    ui.chartList.append(card);
+    chartViews.push({ chart, canvas, tooltip });
+  });
+  drawCharts();
+}
+
+// Slots fuer die Auswahl: belegte, im Log vorkommende und schon gewaehlte
+function selectableSlots(chart) {
+  const slots = new Set([...activeSlots(), ...chart.slots]);
+  sensors.forEach((sensor, slot) => {
+    if (sensor.used) {
+      slots.add(slot);
+    }
+  });
+  return [...slots].sort((a, b) => a - b);
+}
+
+function openChartDialog(index) {
+  dialogChartIndex = index;
+  const chart = index === null ? { title: "", all: false, slots: [], hidden: [] } : charts[index];
+  ui.chartDialogTitle.textContent = index === null ? "Diagramm hinzufügen" : "Diagramm bearbeiten";
+  ui.chartTitle.value = chart.title;
+  ui.chartAll.checked = chart.all;
+  ui.chartSplit.checked = false;
+  ui.chartSplitLabel.hidden = index !== null;
+  ui.chartDialogError.hidden = true;
+
+  ui.chartSensorList.replaceChildren();
+  const slots = selectableSlots(chart);
+  if (slots.length === 0) {
+    const hint = document.createElement("p");
+    hint.className = "muted";
+    hint.textContent = "Noch keine Sensoren bekannt. Einmal mit dem ESP32 verbinden.";
+    ui.chartSensorList.append(hint);
+  }
+  for (const slot of slots) {
+    const label = document.createElement("label");
+    label.className = "check";
+    label.style.setProperty("--color", seriesColor(slot));
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = String(slot);
+    box.checked = chart.all || chart.slots.includes(slot);
+    const swatch = document.createElement("span");
+    swatch.className = "swatch";
+    label.append(box, swatch, document.createTextNode(`${slot + 1}. ${sensorName(slot)}`));
+    ui.chartSensorList.append(label);
+  }
+  updateChartDialog();
+  ui.chartDialog.showModal();
+}
+
+function dialogBoxes() {
+  return [...ui.chartSensorList.querySelectorAll("input[type=checkbox]")];
+}
+
+function updateChartDialog() {
+  const all = ui.chartAll.checked;
+  for (const box of dialogBoxes()) {
+    box.disabled = all;
+    if (all) {
+      box.checked = true;
     }
   }
-  drawCharts();
-  updateControls();
+  ui.chartSelectAll.disabled = all;
+  ui.chartSelectNone.disabled = all;
+  ui.chartSplit.disabled = all;
+}
+
+function applyChartDialog() {
+  const all = ui.chartAll.checked;
+  const selected = dialogBoxes().filter((box) => box.checked).map((box) => Number(box.value));
+  if (!all && selected.length === 0) {
+    ui.chartDialogError.textContent = "Mindestens einen Sensor wählen.";
+    ui.chartDialogError.hidden = false;
+    return;
+  }
+  const title = ui.chartTitle.value.trim();
+  if (dialogChartIndex === null) {
+    if (!all && ui.chartSplit.checked) {
+      for (const slot of selected) {
+        charts.push({ title: "", all: false, slots: [slot], hidden: [] });
+      }
+    } else {
+      charts.push({ title, all, slots: all ? [] : selected, hidden: [] });
+    }
+  } else {
+    const chart = charts[dialogChartIndex];
+    chart.title = title;
+    chart.all = all;
+    chart.slots = all ? [] : selected;
+    chart.hidden = chart.hidden.filter((slot) => all || selected.includes(slot));
+  }
+  saveCharts();
+  ui.chartDialog.close();
+  hoverEpoch = null;
+  renderCharts();
+}
+
+// --- Logdaten im Browser -------------------------------------------------
+
+let dbPromise = null;
+
+function openDb() {
+  if (!dbPromise) {
+    dbPromise = new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error("IndexedDB wird nicht unterstützt"));
+        return;
+      }
+      const request = indexedDB.open(DB_NAME, 1);
+      // Schluessel ist die Unix-Zeit. Indizes des ESP32 beginnen nach "Log loeschen"
+      // wieder bei 0 und taugen deshalb nicht als Schluessel.
+      request.onupgradeneeded = () => request.result.createObjectStore(DB_STORE, { keyPath: "epoch" });
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+  return dbPromise;
+}
+
+function idbRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function idbTransaction(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+// Temperaturen kompakt als 1/100 Grad wie auf dem ESP32
+function toStored(record) {
+  return {
+    epoch: record.epoch,
+    uptimeS: record.uptimeS,
+    temps: Int16Array.from(record.temps, (v) => (v === null ? NO_VALUE : Math.round(v * 100))),
+  };
+}
+
+function fromStored(item) {
+  return {
+    index: -1,
+    epoch: item.epoch,
+    uptimeS: item.uptimeS,
+    temps: Array.from(item.temps, (v) => (v === NO_VALUE ? null : v / 100)),
+  };
+}
+
+async function flushLocal(refresh = true) {
+  if (pendingLocal.length === 0) {
+    if (refresh) {
+      await refreshLocalInfo();
+    }
+    return;
+  }
+  const batch = pendingLocal;
+  pendingLocal = [];
+  try {
+    const db = await openDb();
+    const tx = db.transaction(DB_STORE, "readwrite");
+    const store = tx.objectStore(DB_STORE);
+    for (const record of batch) {
+      store.put(toStored(record));
+    }
+    await idbTransaction(tx);
+    // Den Browser bitten, die Daten nicht bei Speichermangel zu verwerfen.
+    if (navigator.storage && navigator.storage.persist) {
+      navigator.storage.persist().catch(() => {});
+    }
+    if (refresh) {
+      await refreshLocalInfo();
+    }
+  } catch (error) {
+    showMessage(`Daten konnten nicht im Browser gespeichert werden: ${error.message}`);
+  }
+}
+
+async function loadLocalRange(start, end) {
+  const db = await openDb();
+  const store = db.transaction(DB_STORE, "readonly").objectStore(DB_STORE);
+  const range = Number.isFinite(end) ? IDBKeyRange.bound(start, end, false, true) : IDBKeyRange.lowerBound(start);
+  const items = await idbRequest(store.getAll(range));
+  return items.map(fromStored);
+}
+
+// Ohne Verbindung den gewaehlten Zeitraum aus dem Browser zeigen
+async function loadLocal() {
+  if (isConnected()) {
+    return;
+  }
+  let start = 0;
+  let end = Infinity;
+  if (dayMode()) {
+    [start, end] = dayBounds();
+  } else {
+    const days = Number(ui.range.value);
+    if (days > 0) {
+      start = Math.floor(Date.now() / 1000) - days * 86400;
+    }
+  }
+  const token = ++localLoadToken;
+  let list = [];
+  try {
+    list = await loadLocalRange(start, end);
+  } catch (error) {
+    showMessage(`Daten im Browser nicht lesbar: ${error.message}`);
+  }
+  // Inzwischen verbunden oder anderer Zeitraum gewaehlt
+  if (token !== localLoadToken || isConnected()) {
+    return;
+  }
+  records = list;
+  recordsFromBrowser = true;
+  hoverEpoch = null;
+  renderHistory();
+}
+
+// Anzahl, Zeitraum und Tage mit Daten fuer Anzeige und Kalender
+async function refreshLocalInfo() {
+  try {
+    const db = await openDb();
+    const store = db.transaction(DB_STORE, "readonly").objectStore(DB_STORE);
+    const keys = await idbRequest(store.getAllKeys());
+    localDays = new Set();
+    for (const epoch of keys) {
+      localDays.add(startOfDay(new Date(epoch * 1000)).getTime());
+    }
+    localFirstDay = keys.length ? startOfDay(new Date(keys[0] * 1000)) : null;
+    ui.localInfo.textContent = keys.length
+      ? `Im Browser gespeichert: ${keys.length.toLocaleString("de-DE")} Datensätze vom ` +
+        `${formatTime(keys[0])} bis ${formatTime(keys[keys.length - 1])}`
+      : "Im Browser gespeichert: keine Daten";
+  } catch (error) {
+    ui.localInfo.textContent = `Im Browser gespeichert: nicht verfügbar (${error.message})`;
+  }
+  ui.clearLocal.disabled = localDays.size === 0 || Boolean(archive);
+  renderCalendar();
+}
+
+async function clearLocal() {
+  if (!confirm("Alle lokal im Browser gespeicherten Logdaten löschen? Die Daten auf dem ESP32 bleiben.")) {
+    return;
+  }
+  pendingLocal = [];
+  const db = await openDb();
+  const tx = db.transaction(DB_STORE, "readwrite");
+  tx.objectStore(DB_STORE).clear();
+  await idbTransaction(tx);
+  await refreshLocalInfo();
+  if (!isConnected()) {
+    records = [];
+    renderHistory();
+  }
+}
+
+// Sensornamen fuer Legenden und Auswahl ohne Verbindung
+function saveSensorsLocal() {
+  try {
+    localStorage.setItem(SENSORS_STORAGE_KEY, JSON.stringify(
+      sensors.map((s) => ({ used: s.used, address: s.address, name: s.name }))
+    ));
+  } catch (e) {}
+}
+
+function loadSensorsLocal() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SENSORS_STORAGE_KEY));
+    if (!Array.isArray(saved)) {
+      return;
+    }
+    saved.slice(0, MAX_SENSORS).forEach((s, slot) => {
+      sensors[slot] = {
+        used: Boolean(s && s.used),
+        present: false,
+        pin: -1,
+        address: s && typeof s.address === "string" ? s.address : "",
+        name: s && typeof s.name === "string" ? s.name : "",
+      };
+    });
+  } catch (e) {}
 }
 
 // Zeitachse aller Diagramme: im Kalender der gewaehlte Ausschnitt des Tages,
@@ -1148,12 +1734,8 @@ function drawCharts() {
   renderZoom();
   const points = timedRecords().sort((a, b) => a.epoch - b.epoch);
   const span = chartSpan(points);
-  if (singleView()) {
-    for (const chart of singleCharts) {
-      drawChart(chart.canvas, [chart.slot], chart.tooltip, points, span);
-    }
-  } else {
-    drawChart(ui.chart, activeSlots(), ui.tooltip, points, span);
+  for (const view of chartViews) {
+    drawChart(view.canvas, visibleSlots(view.chart), view.tooltip, points, span);
   }
 }
 
@@ -1437,6 +2019,12 @@ function updateControls() {
   for (const control of ui.sensors.querySelectorAll("button, input")) {
     control.disabled = !connected;
   }
+  ui.archive.disabled = !connected;
+  ui.clearLocal.disabled = localDays.size === 0 || Boolean(archive);
+  if (archive) {
+    ui.refresh.disabled = true;
+    ui.clear.disabled = true;
+  }
   const calibration = connected && calibrationSupported;
   ui.calibrateAll.disabled = !calibration || calibrating;
   ui.clearOffsets.disabled = !calibration || calibrating;
@@ -1463,13 +2051,16 @@ ui.connect.addEventListener("click", () => {
 
 ui.range.addEventListener("change", () => {
   hoverEpoch = null;
+  try {
+    localStorage.setItem(RANGE_STORAGE_KEY, ui.range.value);
+  } catch (e) {}
   if (dayMode()) {
     run(loadDay);
     return;
   }
   renderCalendar();
   if (!isConnected()) {
-    drawCharts();
+    run(loadLocal);
     return;
   }
   run(async () => {
@@ -1506,13 +2097,14 @@ ui.dayPrev.addEventListener("click", () => selectDay(addDays(selectedDay, -1)));
 ui.dayNext.addEventListener("click", () => selectDay(addDays(selectedDay, 1)));
 ui.dayToday.addEventListener("click", () => selectDay(new Date()));
 
-ui.view.addEventListener("change", () => {
-  try {
-    localStorage.setItem(VIEW_STORAGE_KEY, ui.view.value);
-  } catch (e) {}
-  hoverEpoch = null;
-  renderHistory();
-});
+ui.addChart.addEventListener("click", () => openChartDialog(null));
+ui.chartAll.addEventListener("change", updateChartDialog);
+ui.chartSelectAll.addEventListener("click", () => dialogBoxes().forEach((box) => (box.checked = true)));
+ui.chartSelectNone.addEventListener("click", () => dialogBoxes().forEach((box) => (box.checked = false)));
+ui.chartCancel.addEventListener("click", () => ui.chartDialog.close());
+ui.chartOk.addEventListener("click", applyChartDialog);
+ui.clearLocal.addEventListener("click", () => run(clearLocal));
+ui.archive.addEventListener("click", () => run(archive ? cancelArchive : startArchive));
 
 ui.refresh.addEventListener("click", () => run(startSync));
 ui.download.addEventListener("click", downloadCsv);
@@ -1537,8 +2129,13 @@ ui.clear.addEventListener("click", () => {
   }
 });
 
-addPointerHandlers(ui.chart);
 window.addEventListener("resize", drawCharts);
+// Beim Schliessen oder Wechseln der Seite noch nicht gespeicherte Daten sichern
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    flushLocal();
+  }
+});
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   renderSensors();
   renderHistory();
@@ -1552,16 +2149,21 @@ if (!navigator.bluetooth) {
   );
 }
 
+// Gespeicherte Einstellungen aus der letzten Sitzung
+function restoreSelect(select, key) {
+  const saved = localStorage.getItem(key);
+  if (saved !== null && [...select.options].some((option) => option.value === saved)) {
+    select.value = saved;
+  }
+}
+
 try {
-  const savedView = localStorage.getItem(VIEW_STORAGE_KEY);
-  if (savedView === "single" || savedView === "combined") {
-    ui.view.value = savedView;
-  }
-  const savedZoom = localStorage.getItem(ZOOM_STORAGE_KEY);
-  if (savedZoom !== null && [...ui.zoom.options].some((option) => option.value === savedZoom)) {
-    ui.zoom.value = savedZoom;
-  }
+  restoreSelect(ui.zoom, ZOOM_STORAGE_KEY);
+  restoreSelect(ui.range, RANGE_STORAGE_KEY);
+  localStorage.removeItem("heizkreis-view");  // fruehere Auswahl "Ein Diagramm / Je Sensor"
 } catch (e) {}
+loadCharts();
+loadSensorsLocal();
 
 renderHistory();
 let savedTab = "main";
@@ -1569,3 +2171,4 @@ try {
   savedTab = localStorage.getItem(TAB_STORAGE_KEY) || "main";
 } catch (e) {}
 showTab(savedTab);
+refreshLocalInfo().then(() => loadLocal());
