@@ -62,6 +62,25 @@
       </div>
       <progress id="progress" max="1" value="0" hidden></progress>
       <p id="history" class="muted">Noch keine Daten geladen</p>
+      <div id="zoomControls" class="controls zoom" hidden>
+        <label>
+          Ausschnitt
+          <select id="zoom">
+            <option value="0" selected>Ganzer Tag</option>
+            <option value="43200">Letzte 12 h</option>
+            <option value="21600">Letzte 6 h</option>
+            <option value="10800">Letzte 3 h</option>
+            <option value="3600">Letzte 1 h</option>
+            <option value="1800">Letzte 30 min</option>
+            <option value="900">Letzte 15 min</option>
+          </select>
+        </label>
+        <div class="zoom-pan">
+          <button id="panPrev" type="button" class="secondary">‹ Früher</button>
+          <span id="zoomRange"></span>
+          <button id="panNext" type="button" class="secondary">Später ›</button>
+        </div>
+      </div>
       <div id="combined">
         <div class="chart"><canvas id="chart"></canvas></div>
         <div id="legend" class="legend"></div>

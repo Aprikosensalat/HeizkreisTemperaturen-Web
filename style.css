@@ -377,6 +377,29 @@ canvas {
   color: var(--text);
 }
 
+/* Ausschnitt im Tagesverlauf */
+.zoom {
+  margin-top: 12px;
+}
+
+.zoom-pan {
+  display: flex;
+  flex: 1 1 260px;
+  align-items: center;
+  gap: 6px;
+}
+
+.zoom-pan button {
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+
+.zoom-pan span {
+  flex: 1;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Reiter */
 .tabs {
   display: flex;

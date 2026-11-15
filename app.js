@@ -43,6 +43,7 @@ const SYNC_STALL_MS = 2000;
 const AUTO_REFRESH_MS = 60000;
 const VIEW_STORAGE_KEY = "heizkreis-view";
 const TAB_STORAGE_KEY = "heizkreis-tab";
+const ZOOM_STORAGE_KEY = "heizkreis-zoom";
 const OFFSET_MAX = 20;  // Grad, wie OFFSET_MAX in der Firmware
 
 const el = (id) => document.getElementById(id);
@@ -71,6 +72,11 @@ const ui = {
   dayPrev: el("dayPrev"),
   dayToday: el("dayToday"),
   dayNext: el("dayNext"),
+  zoomControls: el("zoomControls"),
+  zoom: el("zoom"),
+  panPrev: el("panPrev"),
+  panNext: el("panNext"),
+  zoomRange: el("zoomRange"),
   interval: el("interval"),
   measure: el("measure"),
   scan: el("scan"),
@@ -111,6 +117,7 @@ let selectedDay = startOfDay(new Date());
 let calendarMonth = new Date(selectedDay.getFullYear(), selectedDay.getMonth(), 1);
 let dayStartIndex = 0;
 let dayEndIndex = 0;
+let viewEnd = null;             // Ende des Ausschnitts, null = am Ende (jetzt bzw. Tagesende)
 
 function emptySensors() {
   return Array.from({ length: MAX_SENSORS }, () => ({
@@ -628,6 +635,7 @@ async function loadDay() {
   records = [];
   nextRecord = dayStartIndex;
   hoverEpoch = null;
+  viewEnd = null;
   renderHistory();
   await startSync();
 }
@@ -635,6 +643,7 @@ async function loadDay() {
 function selectDay(date) {
   const today = startOfDay(new Date());
   selectedDay = startOfDay(date > today ? today : date);
+  viewEnd = null;
   calendarMonth = new Date(selectedDay.getFullYear(), selectedDay.getMonth(), 1);
   run(loadDay);
 }
@@ -1062,18 +1071,81 @@ function renderHistory() {
   updateControls();
 }
 
-// Zeitachse aller Diagramme: im Kalender der ganze Tag, sonst die geladenen Daten
+// Zeitachse aller Diagramme: im Kalender der gewaehlte Ausschnitt des Tages,
+// sonst die geladenen Daten
 function chartSpan(points) {
   if (points.length === 0) {
     return null;
   }
   if (dayMode()) {
-    return dayBounds();
+    return dayWindow();
   }
   return [points[0].epoch, Math.max(points[points.length - 1].epoch, points[0].epoch + 60)];
 }
 
+// --- Ausschnitt im Tagesverlauf ------------------------------------------
+
+function zoomSeconds() {
+  return dayMode() ? Number(ui.zoom.value) : 0;
+}
+
+// Spaetestes Ende des Ausschnitts: heute jetzt, an anderen Tagen das Tagesende.
+// Am fruehen Morgen reicht der Ausschnitt ueber "jetzt" hinaus.
+function latestWindowEnd(seconds) {
+  const [dayStart, dayEnd] = dayBounds();
+  const now = Math.floor(Date.now() / 1000);
+  return Math.max(Math.min(dayEnd, now), dayStart + seconds);
+}
+
+function dayWindow() {
+  const [dayStart, dayEnd] = dayBounds();
+  const seconds = zoomSeconds();
+  if (!seconds || seconds >= dayEnd - dayStart) {
+    return [dayStart, dayEnd];
+  }
+  const latest = latestWindowEnd(seconds);
+  const end = Math.max(dayStart + seconds, viewEnd === null ? latest : Math.min(viewEnd, latest));
+  return [end - seconds, end];
+}
+
+// Verschiebt den Ausschnitt um einen halben Ausschnitt, -1 frueher, +1 spaeter.
+function pan(direction) {
+  const seconds = zoomSeconds();
+  if (!seconds) {
+    return;
+  }
+  const [dayStart] = dayBounds();
+  const latest = latestWindowEnd(seconds);
+  const end = dayWindow()[1] + (direction * seconds) / 2;
+  const clamped = Math.min(Math.max(end, dayStart + seconds), latest);
+  viewEnd = clamped >= latest ? null : clamped;
+  hoverEpoch = null;
+  drawCharts();
+}
+
+function formatClock(epoch, dayEnd) {
+  // Das Tagesende als 24:00 statt 00:00 anzeigen
+  if (epoch === dayEnd) {
+    return "24:00";
+  }
+  return new Date(epoch * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+}
+
+function renderZoom() {
+  ui.zoomControls.hidden = !dayMode();
+  if (!dayMode()) {
+    return;
+  }
+  const seconds = zoomSeconds();
+  const [dayStart, dayEnd] = dayBounds();
+  const [start, end] = dayWindow();
+  ui.zoomRange.textContent = `${formatClock(start, dayEnd)} – ${formatClock(end, dayEnd)}`;
+  ui.panPrev.disabled = !seconds || start <= dayStart;
+  ui.panNext.disabled = !seconds || end >= latestWindowEnd(seconds);
+}
+
 function drawCharts() {
+  renderZoom();
   const points = timedRecords().sort((a, b) => a.epoch - b.epoch);
   const span = chartSpan(points);
   if (singleView()) {
@@ -1119,9 +1191,24 @@ function drawChart(canvas, slots, tooltip, points, span) {
   ctx.lineWidth = 1;
   ctx.strokeRect(area.left, area.top, area.right - area.left, area.bottom - area.top);
 
+  // Nur Punkte im Ausschnitt zaehlen fuer Achse und Fadenkreuz. Gezeichnet wird je
+  // ein Punkt davor und danach mit, damit die Linien bis an den Rand gehen.
+  let first = 0;
+  let last = points.length - 1;
+  if (span) {
+    while (first < points.length && points[first].epoch < span[0]) {
+      first++;
+    }
+    while (last >= 0 && points[last].epoch > span[1]) {
+      last--;
+    }
+  }
+  const inside = points.slice(first, last + 1);
+  points = points.slice(Math.max(0, first - 1), Math.min(points.length, last + 2));
+
   let min = Infinity;
   let max = -Infinity;
-  for (const record of points) {
+  for (const record of inside) {
     for (const slot of slots) {
       const v = record.temps[slot];
       if (v !== null) {
@@ -1163,7 +1250,7 @@ function drawChart(canvas, slots, tooltip, points, span) {
 
   // Zeitachse, an der Ortszeit ausgerichtet
   const offset = -new Date().getTimezoneOffset() * 60;
-  const steps = [600, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800, 2592000];
+  const steps = [60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800, 2592000];
   const maxTicks = width > 500 ? 6 : 4;
   const xStep = steps.find((s) => duration / s <= maxTicks) || steps[steps.length - 1];
   ctx.textAlign = "center";
@@ -1188,6 +1275,11 @@ function drawChart(canvas, slots, tooltip, points, span) {
   // Luecken (Stromausfall, fehlender Sensor) werden nicht verbunden.
   const maxGap = Math.max(300, (status ? status.intervalS : 60) * 3) * step;
 
+  // Linien ausserhalb des Ausschnitts abschneiden
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(area.left, area.top, area.right - area.left, area.bottom - area.top);
+  ctx.clip();
   ctx.lineWidth = 2;
   ctx.lineJoin = "round";
   for (const slot of slots) {
@@ -1210,13 +1302,14 @@ function drawChart(canvas, slots, tooltip, points, span) {
     }
     ctx.stroke();
   }
+  ctx.restore();
 
-  // Fadenkreuz mit den Werten des naechsten Datensatzes
-  if (hoverEpoch === null) {
+  // Fadenkreuz mit den Werten des naechsten Datensatzes im Ausschnitt
+  if (hoverEpoch === null || inside.length === 0) {
     tooltip.textContent = "";
     return;
   }
-  const record = nearestRecord(points, hoverEpoch);
+  const record = nearestRecord(inside, hoverEpoch);
   const x = toX(record.epoch);
   ctx.strokeStyle = muted;
   ctx.lineWidth = 1;
@@ -1390,6 +1483,17 @@ ui.range.addEventListener("change", () => {
   });
 });
 
+ui.zoom.addEventListener("change", () => {
+  try {
+    localStorage.setItem(ZOOM_STORAGE_KEY, ui.zoom.value);
+  } catch (e) {}
+  viewEnd = null;
+  hoverEpoch = null;
+  drawCharts();
+});
+ui.panPrev.addEventListener("click", () => pan(-1));
+ui.panNext.addEventListener("click", () => pan(1));
+
 ui.calPrev.addEventListener("click", () => {
   calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1);
   renderCalendar();
@@ -1452,6 +1556,10 @@ try {
   const savedView = localStorage.getItem(VIEW_STORAGE_KEY);
   if (savedView === "single" || savedView === "combined") {
     ui.view.value = savedView;
+  }
+  const savedZoom = localStorage.getItem(ZOOM_STORAGE_KEY);
+  if (savedZoom !== null && [...ui.zoom.options].some((option) => option.value === savedZoom)) {
+    ui.zoom.value = savedZoom;
   }
 } catch (e) {}
 

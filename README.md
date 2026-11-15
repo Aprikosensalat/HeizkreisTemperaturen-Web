@@ -68,8 +68,15 @@ müssen zu denen in `src/main.cpp` der Firmware passen.
   verbunden. Das Log wird jede Minute nachgeladen, und zwar nur die neuen Datensätze.
 - **Kalender (Standard):** Zeitraum "Tag aus Kalender". Ein Monatskalender, darunter
   "Vortag", "Heute" und "Folgetag". Wählbar sind die Tage vom ersten Tag im Log bis heute.
-  Das Diagramm zeigt immer den ganzen Tag von 0 bis 24 Uhr. Ist heute gewählt, kommen
-  neue Messungen jede Minute dazu. Die CSV-Datei heißt dann `heizkreis_<Tag>.csv`.
+  Das Diagramm zeigt den ganzen Tag von 0 bis 24 Uhr. Ist heute gewählt, kommen
+  neue Messungen jede Minute dazu.
+- **Ausschnitt:** In der Tagesansicht lässt sich über "Ausschnitt" hineinzoomen: ganzer
+  Tag oder die letzten 12 h, 6 h, 3 h, 1 h, 30 min oder 15 min. "Letzte" heißt bei heute
+  bis jetzt, bei anderen Tagen bis 24 Uhr. Mit "‹ Früher" und "Später ›" wandert der
+  Ausschnitt um eine halbe Breite über den Tag, die Zeit daneben zeigt den sichtbaren
+  Bereich. Die Temperaturachse passt sich dem Ausschnitt an, das Fadenkreuz zeigt nur
+  Werte darin. Steht der Ausschnitt am Ende, läuft er bei heute mit. Gilt für beide
+  Ansichten, der Browser merkt sich die Wahl. Die CSV-Datei enthält weiter den ganzen Tag. Die CSV-Datei heißt dann `heizkreis_<Tag>.csv`.
   Geladen wird ab dem Segment, das vor dem Tag beginnt, bis zum Tagesende. Das dauert bei
   32 Sensoren und 1 min Intervall etwa 5 bis 15 Sekunden, je nach MTU.
 - **Weitere Zeiträume:** Letzte 24 h, 7 Tage, 30 Tage oder alles. Der Startpunkt wird über
