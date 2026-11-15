@@ -9,6 +9,7 @@ const CHAR_LOG_DATA_UUID = "7e6a0004-5c3b-4d2a-9f1e-8b4c2d6e0a01";
 const CHAR_SENSORS_UUID = "7e6a0005-5c3b-4d2a-9f1e-8b4c2d6e0a01";
 const CHAR_SENSOR_NAME_UUID = "7e6a0006-5c3b-4d2a-9f1e-8b4c2d6e0a01";
 const CHAR_SEGMENTS_UUID = "7e6a0007-5c3b-4d2a-9f1e-8b4c2d6e0a01";
+const CHAR_CALIBRATION_UUID = "7e6a0008-5c3b-4d2a-9f1e-8b4c2d6e0a01";
 
 const CMD_SET_TIME = 1;
 const CMD_SET_INTERVAL = 2;
@@ -20,6 +21,9 @@ const CMD_FORGET = 7;
 const CMD_MEASURE = 8;
 const CMD_SENSOR_LIST = 9;
 const CMD_SEGMENTS = 10;
+const CMD_SET_OFFSET = 11;
+const CMD_CALIBRATE = 12;
+const CMD_CLEAR_OFFSETS = 13;
 
 const FLAG_TIME_SET = 1 << 0;
 const FLAG_SENSOR_OK = 1 << 1;
@@ -38,6 +42,8 @@ const SEGMENTS_TIMEOUT_MS = 5000;
 const SYNC_STALL_MS = 2000;
 const AUTO_REFRESH_MS = 60000;
 const VIEW_STORAGE_KEY = "heizkreis-view";
+const TAB_STORAGE_KEY = "heizkreis-tab";
+const OFFSET_MAX = 20;  // Grad, wie OFFSET_MAX in der Firmware
 
 const el = (id) => document.getElementById(id);
 
@@ -70,6 +76,12 @@ const ui = {
   scan: el("scan"),
   storage: el("storage"),
   clear: el("clear"),
+  calibrateAll: el("calibrateAll"),
+  clearOffsets: el("clearOffsets"),
+  calibrationInfo: el("calibrationInfo"),
+  calibrationList: el("calibrationList"),
+  tabs: document.querySelectorAll("[data-tab]"),
+  pages: document.querySelectorAll("[data-page]"),
 };
 
 let device = null;
@@ -78,6 +90,10 @@ let sensorNameChar = null;
 let status = null;
 let sensors = emptySensors();  // je Slot {used, present, address, name}
 let temps = [];                 // aktuelle Werte in Grad, null = kein Wert
+let offsets = [];               // Offset je Slot in Grad
+let rawTemps = [];              // Rohwerte ohne Offset, null = kein Wert
+let calibrationSupported = false;
+let calibrating = false;
 let records = [];
 let nextRecord = 0;
 let syncing = false;
@@ -215,6 +231,20 @@ async function connect() {
     await sensorsChar.startNotifications();
     await segmentsChar.startNotifications();
 
+    // Aeltere Firmware hat keine Kalibrierung, die Seite laeuft dann ohne.
+    let calibrationChar = null;
+    try {
+      calibrationChar = await service.getCharacteristic(CHAR_CALIBRATION_UUID);
+      calibrationChar.addEventListener("characteristicvaluechanged", (event) => {
+        onCalibration(event.target.value);
+      });
+      await calibrationChar.startNotifications();
+      calibrationSupported = true;
+    } catch (error) {
+      calibrationChar = null;
+      calibrationSupported = false;
+    }
+
     // Korrigiert auch alle Daten, die seit dem Start ohne Uhrzeit geloggt wurden.
     await sendCommand(CMD_SET_TIME, Math.floor(Date.now() / 1000));
     // Die Sensorliste kommt in Teilen ueber Notifications.
@@ -222,6 +252,9 @@ async function connect() {
     await sendCommand(CMD_SENSOR_LIST);
     onTemperatures(await temperaturesChar.readValue());
     onStatus(await statusChar.readValue());
+    if (calibrationChar) {
+      onCalibration(await calibrationChar.readValue());
+    }
 
     ui.connection.textContent = `Verbunden mit ${device.name || "ESP32"}`;
     ui.connect.textContent = "Trennen";
@@ -251,11 +284,16 @@ function onDisconnected() {
   syncing = false;
   resumePending = false;
   temps = [];
+  offsets = [];
+  rawTemps = [];
+  calibrationSupported = false;
+  calibrating = false;
   ui.progress.hidden = true;
   ui.connection.textContent = "Nicht verbunden";
   ui.connect.textContent = "Verbinden";
   ui.storage.textContent = "Speicher: –";
   renderSensors();
+  renderCalibration();
   updateControls();
 }
 
@@ -273,6 +311,26 @@ function readTemps(view, offset) {
 function onTemperatures(view) {
   temps = readTemps(view, 0);
   renderSensors();
+  renderCalibration();
+}
+
+// Kalibrierung: 32 x i16 Offsets, danach 32 x i16 Rohwerte, beides in 1/100 Grad
+function onCalibration(view) {
+  const count = Math.min(MAX_SENSORS, Math.floor(view.byteLength / 4));
+  offsets = [];
+  rawTemps = [];
+  for (let slot = 0; slot < count; slot++) {
+    offsets.push(view.getInt16(slot * 2, true) / 100);
+    const raw = view.getInt16((MAX_SENSORS + slot) * 2, true);
+    rawTemps.push(raw === NO_VALUE ? null : raw / 100);
+  }
+  if (calibrating) {
+    calibrating = false;
+    showMessage("");
+  }
+  renderSensors();
+  renderCalibration();
+  updateControls();
 }
 
 // Ein Teil der Sensorliste: u8 erster Slot, u8 Anzahl, danach die Eintraege.
@@ -302,6 +360,7 @@ function onSensorPage(view) {
     };
   }
   renderSensors();
+  renderCalibration();
   renderHistory();
 }
 
@@ -663,7 +722,7 @@ function renderSensors() {
 
     const address = document.createElement("span");
     address.className = "address";
-    address.textContent = sensorLocation(sensor);
+    address.textContent = sensorLocation(sensor, slot);
 
     // Name direkt eingeben und speichern, wie im Templogger
     const input = document.createElement("input");
@@ -711,9 +770,181 @@ function renderSensors() {
   }
 }
 
-// Adresse und Pin, an dem der Sensor zuletzt gefunden wurde
-function sensorLocation(sensor) {
-  return sensor.pin >= 0 ? `${sensor.address} · GPIO ${sensor.pin}` : sensor.address;
+// Adresse und Pin, an dem der Sensor zuletzt gefunden wurde, dazu ein Offset ungleich 0
+function sensorLocation(sensor, slot) {
+  let text = sensor.pin >= 0 ? `${sensor.address} · GPIO ${sensor.pin}` : sensor.address;
+  if (slot !== undefined && offsets[slot]) {
+    text += ` · Offset ${formatSigned(offsets[slot])} K`;
+  }
+  return text;
+}
+
+function formatSigned(value) {
+  return (value > 0 ? "+" : "") + formatNumber(value, 2);
+}
+
+// --- Kalibrierung -------------------------------------------------------
+
+// Spanne zwischen groesstem und kleinstem Wert, null bei weniger als 2 Werten
+function spread(values) {
+  const valid = values.filter((v) => v !== null && v !== undefined);
+  return valid.length < 2 ? null : Math.max(...valid) - Math.min(...valid);
+}
+
+function renderCalibration() {
+  // Nicht neu aufbauen, solange ein Offset bearbeitet wird.
+  if (ui.calibrationList.contains(document.activeElement) && document.activeElement.tagName === "INPUT") {
+    return;
+  }
+  ui.calibrationList.replaceChildren();
+
+  if (!isConnected()) {
+    ui.calibrationInfo.textContent = "Nicht verbunden";
+    return;
+  }
+  if (!calibrationSupported) {
+    ui.calibrationInfo.textContent =
+      "Die Firmware auf dem ESP32 kennt noch keine Kalibrierung. Bitte die aktuelle Firmware flashen.";
+    return;
+  }
+
+  const slots = [];
+  sensors.forEach((sensor, slot) => {
+    if (sensor.used) {
+      slots.push(slot);
+    }
+  });
+  const present = slots.filter((slot) => sensors[slot].present && rawTemps[slot] !== null && rawTemps[slot] !== undefined);
+  if (present.length > 0) {
+    const raws = present.map((slot) => rawTemps[slot]);
+    const mean = raws.reduce((a, b) => a + b, 0) / raws.length;
+    const rawSpread = spread(raws);
+    const calSpread = spread(present.map((slot) => temps[slot]));
+    let text = `${present.length} Sensor(en) mit Messwert. Mittelwert der Rohwerte ${formatNumber(mean, 2)} °C`;
+    if (rawSpread !== null) {
+      text += `, Spanne roh ${formatNumber(rawSpread, 2)} K, korrigiert ${formatNumber(calSpread, 2)} K`;
+    }
+    ui.calibrationInfo.textContent = text + ".";
+  } else {
+    ui.calibrationInfo.textContent = "Noch keine Messwerte.";
+  }
+
+  for (const slot of slots) {
+    const sensor = sensors[slot];
+    const raw = rawTemps[slot];
+    const value = temps[slot];
+    const offset = offsets[slot] || 0;
+
+    const row = document.createElement("div");
+    row.className = "calibration-row";
+    row.style.setProperty("--color", seriesColor(slot));
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = `${slot + 1}. ${sensorName(slot)}`;
+
+    const values = document.createElement("span");
+    values.className = "readings";
+    if (!sensor.present) {
+      values.textContent = "nicht gefunden";
+    } else if (raw === null || raw === undefined) {
+      values.textContent = "kein Messwert";
+    } else {
+      values.textContent =
+        `roh ${formatNumber(raw, 2)} °C  ${offset < 0 ? "−" : "+"} ${formatNumber(Math.abs(offset), 2)} K  = ` +
+        `${value === null || value === undefined ? "–" : formatNumber(value, 2)} °C`;
+    }
+
+    const controls = document.createElement("div");
+    controls.className = "controls";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "0.01";
+    input.min = String(-OFFSET_MAX);
+    input.max = String(OFFSET_MAX);
+    input.value = offset.toFixed(2);
+    input.setAttribute("aria-label", `Offset für ${sensorName(slot)} in Kelvin`);
+    const unit = document.createElement("span");
+    unit.className = "unit";
+    unit.textContent = "K";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "secondary small";
+    save.textContent = "Speichern";
+    save.addEventListener("click", () => run(() => setOffset(slot, input.value)));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        run(() => setOffset(slot, input.value));
+      }
+    });
+    controls.append(input, unit, save);
+
+    row.append(name, values, controls);
+    ui.calibrationList.append(row);
+  }
+  updateControls();
+}
+
+async function setOffset(slot, text) {
+  // Ein leeres oder ungueltiges Zahlenfeld liefert "", das waere sonst Offset 0.
+  const trimmed = String(text).trim().replace(",", ".");
+  const value = Number(trimmed);
+  if (trimmed === "" || !Number.isFinite(value) || Math.abs(value) > OFFSET_MAX) {
+    showMessage(`Offset muss eine Zahl zwischen −${OFFSET_MAX} und ${OFFSET_MAX} K sein.`);
+    return;
+  }
+  const cents = Math.round(value * 100);
+  // Bit 0-7 Slot, Bit 16-31 Offset als i16
+  const arg = (((cents & 0xffff) << 16) | slot) >>> 0;
+  await sendCommand(CMD_SET_OFFSET, arg);
+  document.activeElement.blur();
+  showMessage("");
+  renderCalibration();
+}
+
+async function calibrateAllSensors() {
+  const count = sensors.filter((s, slot) => s.present && rawTemps[slot] !== null && rawTemps[slot] !== undefined).length;
+  if (count < 2) {
+    showMessage("Zum Angleichen braucht es mindestens 2 Sensoren mit Messwert.");
+    return;
+  }
+  if (!confirm(
+    `${count} Sensoren angleichen? Alle müssen gerade dieselbe Temperatur haben. ` +
+    "Die bisherigen Offsets werden überschrieben."
+  )) {
+    return;
+  }
+  calibrating = true;
+  showMessage("Messe und gleiche an …");
+  await sendCommand(CMD_CALIBRATE);
+}
+
+async function clearAllOffsets() {
+  if (confirm("Die Offsets aller Sensoren auf 0 setzen?")) {
+    await sendCommand(CMD_CLEAR_OFFSETS);
+  }
+}
+
+// --- Reiter -------------------------------------------------------------
+
+function showTab(name) {
+  if (![...ui.tabs].some((tab) => tab.dataset.tab === name)) {
+    name = "main";
+  }
+  for (const tab of ui.tabs) {
+    tab.setAttribute("aria-selected", String(tab.dataset.tab === name));
+  }
+  for (const page of ui.pages) {
+    page.hidden = page.dataset.page !== name;
+  }
+  try {
+    localStorage.setItem(TAB_STORAGE_KEY, name);
+  } catch (e) {}
+  if (name === "main") {
+    drawCharts();  // Diagramme haben im versteckten Reiter keine Groesse
+  } else {
+    renderCalibration();
+  }
 }
 
 // Kuerzt auf SENSOR_NAME_BYTES Bytes UTF-8, ohne ein Zeichen zu zerschneiden.
@@ -1113,6 +1344,12 @@ function updateControls() {
   for (const control of ui.sensors.querySelectorAll("button, input")) {
     control.disabled = !connected;
   }
+  const calibration = connected && calibrationSupported;
+  ui.calibrateAll.disabled = !calibration || calibrating;
+  ui.clearOffsets.disabled = !calibration || calibrating;
+  for (const control of ui.calibrationList.querySelectorAll("button, input")) {
+    control.disabled = !calibration || calibrating;
+  }
 }
 
 async function run(action) {
@@ -1179,6 +1416,12 @@ ui.interval.addEventListener("change", () => run(() => sendCommand(CMD_SET_INTER
 ui.measure.addEventListener("click", () => run(() => sendCommand(CMD_MEASURE)));
 ui.scan.addEventListener("click", () => run(() => sendCommand(CMD_SCAN)));
 
+ui.calibrateAll.addEventListener("click", () => run(calibrateAllSensors));
+ui.clearOffsets.addEventListener("click", () => run(clearAllOffsets));
+for (const tab of ui.tabs) {
+  tab.addEventListener("click", () => showTab(tab.dataset.tab));
+}
+
 ui.clear.addEventListener("click", () => {
   if (confirm("Alle Logdaten auf dem ESP32 unwiderruflich löschen?")) {
     run(async () => {
@@ -1213,3 +1456,8 @@ try {
 } catch (e) {}
 
 renderHistory();
+let savedTab = "main";
+try {
+  savedTab = localStorage.getItem(TAB_STORAGE_KEY) || "main";
+} catch (e) {}
+showTab(savedTab);

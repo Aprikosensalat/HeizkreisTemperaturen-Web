@@ -16,6 +16,12 @@
     <p id="message" class="message" hidden></p>
     <p id="connection" class="muted">Nicht verbunden</p>
 
+    <nav class="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="main" aria-selected="true">Messwerte</button>
+      <button type="button" role="tab" data-tab="calibration" aria-selected="false">Kalibrierung</button>
+    </nav>
+
+    <div data-page="main">
     <section id="sensors" class="values" aria-label="Aktuelle Temperaturen"></section>
 
     <section class="panel">
@@ -91,6 +97,27 @@
         <button id="clear" type="button" class="danger" disabled>Log löschen</button>
       </div>
     </section>
+    </div>
+
+    <div data-page="calibration" hidden>
+      <section class="panel">
+        <h2>Kalibrierung</h2>
+        <p class="muted">Der Offset wird zum Rohwert des Sensors addiert. Angezeigt, geloggt und
+          exportiert wird der korrigierte Wert. Bereits geloggte Daten bleiben unverändert.</p>
+        <h3>Alle angleichen</h3>
+        <p class="muted">Alle Sensoren müssen gerade dieselbe Temperatur haben, zum Beispiel
+          gebündelt in einem Wasserbad oder seit mindestens 30 Minuten nebeneinander. Der ESP32
+          misst dann neu und setzt die Offsets so, dass jeder Sensor den Mittelwert aller
+          Rohwerte anzeigt.</p>
+        <div class="controls spaced">
+          <button id="calibrateAll" type="button" disabled>Alle angleichen</button>
+          <button id="clearOffsets" type="button" class="danger" disabled>Alle Offsets auf 0</button>
+        </div>
+        <p id="calibrationInfo" class="muted"></p>
+        <h3>Je Sensor</h3>
+        <div id="calibrationList" class="calibration-list"></div>
+      </section>
+    </div>
   </main>
   <script src="app.js"></script>
 </body>

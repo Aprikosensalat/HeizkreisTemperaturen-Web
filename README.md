@@ -74,6 +74,16 @@ müssen zu denen in `src/main.cpp` der Firmware passen.
   32 Sensoren und 1 min Intervall etwa 5 bis 15 Sekunden, je nach MTU.
 - **Weitere Zeiträume:** Letzte 24 h, 7 Tage, 30 Tage oder alles. Der Startpunkt wird über
   das aktuelle Intervall geschätzt.
+- **Reiter:** "Messwerte" mit Kacheln, Verlauf und Einstellungen, "Kalibrierung" für die
+  Offsets. Der Browser merkt sich den zuletzt gewählten Reiter.
+- **Kalibrierung:** Je Sensor Rohwert, Offset und korrigierter Wert. Der Offset lässt sich
+  je Sensor eintragen und mit "Speichern" oder Enter übernehmen (±20 K, zwei
+  Nachkommastellen). "Alle angleichen" lässt den ESP32 sofort messen und die Offsets so
+  setzen, dass alle Sensoren den Mittelwert der Rohwerte anzeigen. Dafür müssen alle
+  gerade dieselbe Temperatur haben. "Alle Offsets auf 0" setzt alles zurück. Darüber
+  steht die Spanne der Roh- und der korrigierten Werte. Ein Offset ungleich 0 steht auch
+  in der Kachel. Angezeigt, geloggt und exportiert werden die korrigierten Werte. Mit
+  älterer Firmware ohne Kalibrierung zeigt der Reiter nur einen Hinweis.
 - **Einstellungen:** Messintervall, sofort messen, Sensoren suchen, Log löschen
 - **Speicheranzeige:** Anzahl Datensätze, Kapazität und wie viele Tage sie beim
   aktuellen Intervall reicht
@@ -121,6 +131,7 @@ Gerätename `Heizkreis`.
 | 0005 | Sensoren | notify | Teil der Sensorliste: u8 erster Slot, u8 Anzahl (höchstens 6), danach je Slot 35 Bytes: u8 Flags, i8 GPIO (-1 = nicht gefunden), 8 Bytes ROM-Adresse, 25 Bytes Name (UTF-8, mit Nullbyte) |
 | 0006 | Sensorname | write | u8 Slot, danach der Name als UTF-8, höchstens 24 Bytes |
 | 0007 | Zeitindex | notify | Teil des Zeitindex: u32 erstes Segment, u16 Anzahl (höchstens 40), danach je Segment u32 Unix-Zeit des ersten Datensatzes (0 = unbekannt). Anzahl 0 beendet die Liste. |
+| 0008 | Kalibrierung | read, notify | 32 × i16 Offsets, danach 32 × i16 Rohwerte (ohne Offset), beides in 1/100 Grad, `-32768` = kein Wert. Kommt nach jeder Messung und jeder Änderung eines Offsets. |
 
 Die Liste mit 32 Einträgen ist größer als die 512 Bytes, die eine Characteristic fassen
 kann. Die Firmware schickt sie deshalb in 6 Teilen, nach Befehl 9 und nach jeder Änderung
@@ -146,9 +157,12 @@ Sensor-Flags: Bit 0 Slot belegt, Bit 1 Sensor beim letzten Suchen gefunden.
 | 8 | sofort messen | |
 | 9 | Sensorliste über 0005 senden | |
 | 10 | Zeitindex über 0007 senden | |
+| 11 | Offset setzen | Bit 0–7 Slot, Bit 16–31 Offset als i16 in 1/100 Grad |
+| 12 | sofort messen und alle Sensoren auf den Mittelwert der Rohwerte angleichen | |
+| 13 | alle Offsets auf 0 | |
 
 Ein Datensatz hat 72 Bytes: u32 Unix-Zeit (0 = unbekannt), u32 Laufzeit seit dem Start in
-Sekunden, 32 × i16 Temperaturen in 1/100 Grad. Die n-te Temperatur gehört zu Slot n, im
+Sekunden, 32 × i16 Temperaturen in 1/100 Grad, mit Offset. Die n-te Temperatur gehört zu Slot n, im
 Datensatz genauso wie in der Characteristic 0001.
 
 Ein Paket ohne Datensätze beendet die Übertragung. Geht ein Paket verloren, fordert die
