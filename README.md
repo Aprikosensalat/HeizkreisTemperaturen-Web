@@ -20,6 +20,12 @@ Einzelheiten stehen in der
 
 ## Starten
 
+**Online:** https://aprikosensalat.github.io/HeizkreisTemperaturen-Web/
+
+Die Seite liegt auf GitHub Pages (Branch `main`, Ordner `/`). Jeder Push auf `main`
+veröffentlicht sie nach etwa einer Minute neu. Auf dem Smartphone in Chrome öffnen und
+bei Bedarf über das Menü "Zum Startbildschirm hinzufügen".
+
 Web Bluetooth läuft nur über HTTPS oder `localhost`.
 
 Am PC:
@@ -30,9 +36,7 @@ python -m http.server 8000
 
 Danach `http://localhost:8000` in Chrome oder Edge öffnen.
 
-Für das Smartphone müssen die Dateien auf einem HTTPS-Webspace liegen, zum Beispiel
-GitHub Pages oder Netlify. Chrome auf Android funktioniert. Safari auf dem iPhone
-unterstützt Web Bluetooth nicht.
+Chrome auf Android funktioniert. Safari auf dem iPhone unterstützt Web Bluetooth nicht.
 
 ## Dateien
 
@@ -93,9 +97,8 @@ Zeit des Browsers. Bei Datensätzen ohne bekannte Uhrzeit bleiben Datum und Uhrz
 - Web Bluetooth läuft nur über HTTPS oder `localhost`.
 - Chrome und Edge auf Android oder dem PC sind vorgesehen. Safari auf dem iPhone
   unterstützt Web Bluetooth nicht.
-- Für das Smartphone muss die Website auf einem HTTPS-Webspace liegen, zum Beispiel
-  GitHub Pages. Das ist noch nicht eingerichtet. Bei einem privaten Repo geht GitHub
-  Pages nur mit einem kostenpflichtigen GitHub-Plan.
+- Das Repo ist öffentlich, weil GitHub Pages im kostenlosen Plan nur für öffentliche
+  Repos geht. Die Firmware liegt in einem privaten Repo.
 - Die geladenen Logdaten liegen nur im Speicher der Seite. Beim Neuladen oder neuen
   Verbinden werden sie erneut vom ESP32 geholt.
 - Die Verbindung hat keine Kopplung und kein Passwort.
@@ -156,7 +159,5 @@ Website ab dem fehlenden Index neu an. Die Firmware handelt beim Verbinden eine 
 
 1. DS18B20 an den ESP32 anschließen, siehe
    [README der Firmware](https://github.com/Aprikosensalat/HeizkreisTemperaturen#readme).
-2. Website starten, siehe [Starten](#starten), und alle Funktionen mit echter
-   BLE-Verbindung testen.
-3. Website für die Nutzung am Smartphone auf GitHub Pages oder einem anderen
-   HTTPS-Webspace veröffentlichen.
+2. Website öffnen, siehe [Starten](#starten), und alle Funktionen mit echter
+   BLE-Verbindung testen, am PC und am Smartphone.
